@@ -4731,12 +4731,12 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
 
     def delete_migration_plan(self, plan_id):
         try:
+            self.wait_for_migrationplan_tobe_available(plan_id)
             resp, body = self.wlm_client.client.delete(
                     f"/migration_plans/{plan_id}")
-            if resp.status_code != 200:
+            if resp.status_code != 202:
                 resp.raise_for_status()
             LOG.debug(f"Response of delete_migration_plan: {resp.status_code}")
-            self.wait_for_migrationplan_tobe_available(plan_id)
             return True
         except Exception as e:
             LOG.error(f"Exception in delete_migration_plan: {e}")
@@ -4935,4 +4935,18 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         LOG.debug(f"migration data: {migration}")
         return migration
 
+    '''
+    Method returns the list of migration plans
+    '''
+
+    def getMigrationPlansList(self):
+        resp, body = self.wlm_client.client.get("/migration_plans")
+        if resp.status_code != 200:
+            resp.raise_for_status()
+        plans = body['migration_plans']
+        LOG.debug(f"migration plans: {plans}")
+        plan_ids = []
+        if len(plans):
+            plan_ids = [x['id'] for x in plans]
+        return plan_ids
 
