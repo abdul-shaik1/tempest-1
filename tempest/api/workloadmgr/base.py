@@ -166,7 +166,6 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
     Method returns the Retention Policy Value of a given workload
     '''
 
-    ####### import pdb; pdb.set_trace()
     def getRetentionPolicyValueStatus(self, workload_id):
         resp, body = self.wlm_client.client.get("/workloads/" + workload_id)
         retention_policy_value = body['workload']['jobschedule']['retention_policy_value']
@@ -608,13 +607,12 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
     def workload_create(
             self,
             instances,
-            jobschedule={"enabled": False, "hourly": {}, "daily": {}, \
-                    "weekly": {}, "monthly": {}, "yearly": {}, "manual": {}},
+            jobschedule={"enabled": False, "manual": {"retention": 5}},
             workload_name="",
             workload_cleanup=True,
             encryption=False,
             secret_uuid="",
-            backup_target_type=None,
+            backup_target_type=tvaultconf.default_btt_id,
             description='test'):
         if (tvaultconf.workloads_from_file):
             flag = 0
@@ -2901,22 +2899,6 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
             return False
 
     '''
-    Method returns mountpoint path of backup target media
-    '''
-
-    def get_mountpoint_path(self):
-        cmd = (tvaultconf.command_prefix).replace("<command>","mount")
-        p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE)
-        stdout, stderr = p.communicate()
-        mountpoint_path = None
-        for line in stdout.splitlines():
-            if str(line).find('triliovault-mounts') != -1:
-                mountpoint_path = str(line).split()[2]
-        LOG.debug("mountpoint path is : " + str(mountpoint_path))
-        return str(mountpoint_path)
-
-    '''
     Method returns True if snapshot dir is exists on backup target media
     '''
 
@@ -4968,15 +4950,72 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         return plan_data
 
     '''
-    Method returns the details of a given migration plan
+    Method returns the list of backup targets
     '''
 
-    def getMigrationPlanDetails(self, plan_id):
-        resp, body = self.wlm_client.client.get(f"/migration_plans/{plan_id}")
-        plan_data = body['migration_plan']
-        LOG.debug(f"plan id: {plan_id}, show_migration_plan Response: "\
-                f"{resp.content}")
+    def listBackupTargets(self):
+        resp, body = self.wlm_client.client.get(f"/backup_targets")
+        bts = body['backup_targets']
+        LOG.debug(f"get_backup_targets Response: {resp.content}")
         if resp.status_code != 200:
             resp.raise_for_status()
-        return plan_data
+        return bts
 
+    '''
+    Method returns the list of backup target types
+    '''
+
+    def listBackupTargetTypes(self):
+        resp, body = self.wlm_client.client.get(f"/backup_target_types")
+        btts = body['backup_target_types']
+        LOG.debug(f"get_backup_target_types Response: {resp.content}")
+        if resp.status_code != 200:
+            resp.raise_for_status()
+        return btts
+
+    '''
+    Method returns the backup target of given mount path
+    '''
+
+    def getBackupTargetFromMountPath(self, mount_path):
+        bts = self.listBackupTargets()
+        bt = [x['id'] for x in bts if x['nfs_export_mount_path'] == mount_path]
+        LOG.debug("Backup target corresponding to mount_path "\
+                  f"{mount_path} : {bt[0]}")
+        return bt[0]
+
+    '''
+    Method returns the backup target type of given backup target
+    '''
+
+    def getBackupTargetType(self, backup_target_id):
+        btts = self.listBackupTargetTypes()
+        btt = [x['id'] for x in btts if x['backup_targets_id'] == backup_target_id]
+        LOG.debug("Backup target type corresponding to backup target ID "\
+                  f"{backup_target_id} : {btt[0]}")
+        return btt[0]
+
+    '''
+    Method returns the backup target id of given backup target type
+    '''
+
+    def getBackupTargetFromType(self, backup_target_type_id):
+        btts = self.listBackupTargetTypes()
+        bt = [x['backup_targets_id'] for x in btts if x['id'] == backup_target_type_id]
+        LOG.debug("Backup target corresponding to backup target type ID "\
+                  f"{backup_target_type_id} : {bt[0]}")
+        return bt[0]
+
+    '''
+    Method returns mountpoint path of backup target media
+    '''
+
+    def get_mountpoint_path(self, backup_target=tvaultconf.default_btt_id):
+        mount_path = None
+        bt_id = self.getBackupTargetFromType(backup_target)
+        bts = self.listBackupTargets()
+        for bt in bts:
+            if bt['id'] == bt_id:
+                mount_path = bt['nfs_export_mount_path']
+        LOG.debug(f"mount_path: {mount_path}")
+        return mount_path

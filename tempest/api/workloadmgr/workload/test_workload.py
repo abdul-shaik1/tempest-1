@@ -121,8 +121,6 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             # Prerequisites
             self.created = False
             self.vm_id = self.create_vm()
-            self.volume_id = self.create_volume()
-            self.attach_volume(self.volume_id, self.vm_id)
 
             # Create workload with CLI command
             # Modify workload scheduler to enable and set the start date, time
@@ -137,9 +135,7 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             retention_policy_value = tvaultconf.retention_policy_value
             workload_create = command_argument_string.workload_create + " instance-id=" + str(self.vm_id)\
                 + " --jobschedule start_date=" + str(now_date.strip()) + " --jobschedule start_time='" + str(now_time_plus_2.strip())\
-                + "' --jobschedule interval='" + str(interval) + "' --jobschedule retention_policy_type='"\
-                + str(retention_policy_type) + "' --jobschedule retention_policy_value=" + str(retention_policy_value)\
-                + " --jobschedule enabled=True"
+                + "' --hourly snapshot_type='incremental' retention=2 interval=1 --jobschedule enabled=True"
             LOG.debug(f"workload create command: {workload_create}")
             rc = cli_parser.cli_returncode(workload_create)
             if rc != 0:
@@ -570,8 +566,6 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             # Prerequisites
             self.created = False
             self.vm_id = self.create_vm()
-            self.volume_id = self.create_volume()
-            self.attach_volume(self.volume_id, self.vm_id)
 
             # Create scheduled workload
             # Modify workload scheduler to enable and set the start date, time
@@ -581,18 +575,18 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             now_time_plus_2 = now + datetime.timedelta(minutes=2)
             now_time_plus_2 = datetime.datetime.strftime(
                 now_time_plus_2, "%I:%M %p")
-            self.interval = tvaultconf.interval
-            self.retention_policy_type = tvaultconf.retention_policy_type
-            self.retention_policy_value = tvaultconf.retention_policy_value
             try:
                 self.wid = self.workload_create([self.vm_id], 
                                     jobschedule={"start_date": now_date.strip(),
                                                  "start_time": now_time_plus_2.strip(),
-                                                 "interval": self.interval,
-                                                 "retention_policy_type":
-                                                     self.retention_policy_type,
-                                                 "retention_policy_value":
-                                                     self.retention_policy_value,
+                                                 "hourly": {"snapshot_type": "incremental",
+                                                            "retention": 2,
+                                                            "interval": 1},
+                                                 "daily": {},
+                                                 "weekly": {},
+                                                 "monthly": {},
+                                                 "yearly": {},
+                                                 "manual": {},
                                                  "enabled": "True",
                                                  "workload_cleanup": "False"})
                 LOG.debug("Workload ID: " + str(self.wid))
@@ -645,14 +639,10 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             reporting.add_test_script(str(__name__) +\
                     "_delete_workload_db-only-true_cli")
             global vm_id
-            global vol_id
             # Prerequisites
             self.vm_id = self.create_vm(vm_cleanup=False)
-            self.volume_id = self.create_volume(volume_cleanup=False)
-            self.attach_volume(self.volume_id, self.vm_id,
-                    attach_cleanup=False)
             vm_id = self.vm_id
-            vol_id = self.volume_id
+            self.mount_path = self.get_mountpoint_path()
 
             # Create workload
             self.wid = self.workload_create(
@@ -670,7 +660,6 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             else:
                 raise Exception("Create full snapshot")
 
-            self.mount_path = self.get_mountpoint_path()
             self.snapshot_found = self.check_snapshot_exist_on_backend(
                         self.mount_path, self.wid, self.snapshot_id)
             LOG.debug(f"snapshot_found: {self.snapshot_found}")
@@ -725,10 +714,9 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             reporting.add_test_script(str(__name__) +\
                     "_delete_workload_db-only-false_cli")
             global vm_id
-            global vol_id
             self.vm_id = vm_id
-            self.volume_id = vol_id
-
+            self.mount_path = self.get_mountpoint_path()
+            
             # Create workload
             self.wid = self.workload_create(
                 [self.vm_id], workload_cleanup=False)
@@ -784,7 +772,6 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             reporting.test_case_to_write()
             #Cleanup instance and volume
             self.delete_vm(self.vm_id)
-            self.delete_volume(self.volume_id)
 
     @decorators.attr(type='workloadmgr_api')
     def test_15_workload_get_orphaned_workloads_list(self):
