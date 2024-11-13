@@ -773,7 +773,9 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
                         "migrate_cloud": False,
                         "old_tenant_ids": [],
                         "user_id": user_id,
-                        "new_tenant_id": new_tenant_id}]
+                        "new_tenant_id": new_tenant_id,
+                        "source_btt": [], 
+                        "source_btt_all": False}]
             resp, body = self.wlm_client.client.post(
                 "/workloads/reasign_workloads", json=payload)
             reassignstatus = body['workloads']['reassigned_workloads'][0]['status']
@@ -4979,7 +4981,7 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
 
     def getBackupTargetFromMountPath(self, mount_path):
         bts = self.listBackupTargets()
-        bt = [x['id'] for x in bts if x['nfs_export_mount_path'] == mount_path]
+        bt = [x['id'] for x in bts if x['filesystem_export_mount_path'] == mount_path]
         LOG.debug("Backup target corresponding to mount_path "\
                   f"{mount_path} : {bt[0]}")
         return bt[0]
@@ -5016,6 +5018,6 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         bts = self.listBackupTargets()
         for bt in bts:
             if bt['id'] == bt_id:
-                mount_path = bt['nfs_export_mount_path']
+                mount_path = bt['filesystem_export_mount_path']
         LOG.debug(f"mount_path: {mount_path}")
         return mount_path
