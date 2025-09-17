@@ -166,11 +166,11 @@ function configure_tempest
 
     #Fetch identity data
     admin_domain_id=$($OPENSTACK_CMD domain list | awk "/ $CLOUDADMIN_DOMAIN_NAME / { print \$2 }")
-    admin_project_id=$($OPENSTACK_CMD project list | awk "/ $CLOUDADMIN_PROJECT_NAME / { print \$2 }")
+    admin_project_id=$($OPENSTACK_CMD project list --domain $CLOUDADMIN_DOMAIN_NAME | awk "/ $CLOUDADMIN_PROJECT_NAME / { print \$2 }")
     test_domain_id=$($OPENSTACK_CMD domain list | awk "/ $TEST_DOMAIN_NAME / { print \$2 }")
-    test_project_id=$($OPENSTACK_CMD project list | awk "/ $TEST_PROJECT_NAME / { print \$2 }")
-    test_alt_project_id=$($OPENSTACK_CMD project list | awk "/ $TEST_ALT_PROJECT_NAME / { print \$2 }")
-    service_project_id=$($OPENSTACK_CMD project list | awk "/service*/ { print \$2 }")
+    test_project_id=$($OPENSTACK_CMD project list --domain $TEST_DOMAIN_NAME | awk "/ $TEST_PROJECT_NAME / { print \$2 }")
+    test_alt_project_id=$($OPENSTACK_CMD project list --domain $TEST_DOMAIN_NAME | awk "/ $TEST_ALT_PROJECT_NAME / { print \$2 }")
+    service_project_id=$($OPENSTACK_CMD project list --domain Default | awk "/service*/ { print \$2 }")
     test_user_id=$($OPENSTACK_CMD user list --domain $TEST_DOMAIN_NAME | awk "/ $TEST_USERNAME / { print \$2 }")
     test_alt_user_id=$($OPENSTACK_CMD user list --domain $TEST_DOMAIN_NAME | awk "/ $NONADMIN_USERNAME / { print \$2 }")
     wlm_endpoint=$($OPENSTACK_CMD endpoint list |  awk "/workloads/" | awk "/public/ { print \$14 }")
@@ -419,6 +419,19 @@ EOF
         mysql_port=`ssh $HELM_USER@$HELM_IP "kubectl get svc -n openstack | grep mariadb-server" | xargs | cut -d ' ' -f5 | cut -d ':' -f2 | cut -d '/' -f1`
         echo 'wlm_dbport = '$mysql_port'' >> $TEMPEST_TVAULTCONF
 	command_prefix="ssh $HELM_USER@$HELM_IP '<command>'"
+    elif [[ ${OPENSTACK_DISTRO,,} == 'rhoso'* ]]
+    then
+        wlm_api_pod=`ssh $BASTION_USER@$BASTION_IP "oc get pods -n trilio-openstack | grep wlm-api | head -1" | cut -d ' ' -f1 | xargs`
+        conn_str=`ssh $BASTION_USER@$BASTION_IP "oc exec -t $wlm_api_pod -- grep sql_connection /tmp/pod-shared-triliovault-wlm-api/triliovault-wlm-dynamic.conf" | cut -d '=' -f2 | xargs`
+	mysql_node=`ssh $BASTION_USER@$BASTION_IP "oc get pods -n openstack -o wide  | grep openstack-galera | xargs | cut -d ' ' -f7"`
+        mysql_ip=`ssh $BASTION_USER@$BASTION_IP "oc get nodes -o wide | grep $mysql_node | xargs | cut -d ' ' -f6"`
+        echo "sql_connection: "$conn_str
+        dbusername=`echo $conn_str | cut -d '/' -f 3 | cut -d ':' -f 1`
+        mysql_wlm_pwd=`echo $conn_str | cut -d '/' -f 3 | cut -d ':' -f 2 | cut -d '@' -f 1`
+        dbname=`echo $conn_str | cut -d '/' -f 4 | cut -d '?' -f 1`
+        mysql_port=`ssh $BASTION_USER@$BASTION_IP "oc get svc -n openstack | grep galera-nodeport" | xargs | cut -d ' ' -f5 | cut -d ':' -f2 | cut -d '/' -f1`
+        echo 'wlm_dbport = "'$mysql_port'"' >> $TEMPEST_TVAULTCONF
+	command_prefix="ssh $BASTION_USER@$BASTION_IP 'ssh $COMPUTE_USER@$COMPUTE_IP '<command>''"
     else
         conn_str=`workloadmgr --insecure setting-list --get_hidden True -f value | grep sql_connection`
         mysql_ip=`echo $conn_str | cut -d '/' -f 3 | cut -d ':' -f 2 | cut -d '@' -f 2`
