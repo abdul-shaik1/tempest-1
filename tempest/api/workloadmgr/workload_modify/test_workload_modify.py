@@ -53,8 +53,10 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             LOG.debug("VM ID2: " + str(self.vm_id2))
 
             # Modify workload to add new instance using CLI command
-            workload_modify_command = command_argument_string.workload_modify + " --instance " + \
-                str(self.vm_id2) + " " + str(self.vm_id) + " " + str(self.wid)
+            workload_modify_command = (
+                    f"{command_argument_string.workload_modify} "
+                    f"{self.wid} --instance {self.vm_id2} {self.vm_id}"
+                    )
             rc = cli_parser.cli_returncode(workload_modify_command)
             if rc != 0:
                 reporting.add_test_step(
@@ -100,6 +102,11 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
 
             # Create workload with scheduler enabled
             self.workload_instances.append(self.vm_id)
+            now = datetime.datetime.utcnow()
+            now_date = datetime.datetime.strftime(now, "%m/%d/%Y")
+            now_time_plus_5 = now + datetime.timedelta(minutes=5)
+            now_time_plus_5 = datetime.datetime.strftime(
+                now_time_plus_5, "%I:%M %p")
             self.wid = self.workload_create(
                 self.workload_instances,
                 workload_name=tvaultconf.workload_name,
@@ -107,8 +114,8 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
                 jobschedule={"hourly": tvaultconf.hourly_scheduler,
                              "manual": tvaultconf.manual_retention,
                              "enabled": "True",
-                             "start_date": "",
-                             "start_time": ""})
+                             "start_date": now_date,
+                             "start_time": now_time_plus_5})
             LOG.debug("Workload ID-2: " + str(self.wid))
 
             # Verify workload created with scheduler enable
@@ -326,7 +333,8 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
             now_time_plus_15 = datetime.datetime.strftime(
                 now_time_plus_15, "%I:%M %p")
             workload_modify_command = command_argument_string.workload_modify + str(self.wid) + " --jobschedule enabled=True" + " --jobschedule start_date=" + str(
-                now_date) + " --jobschedule start_time=" + "'" + str(now_time_plus_15).strip() + "'" + " --jobschedule timezone=UTC"
+                now_date) + " --jobschedule start_time=" + "'" + str(now_time_plus_15).strip() + "'" + " --jobschedule timezone=UTC" +\
+                        " --hourly interval='4' retention='1' snapshot_type='incremental'"
             rc = cli_parser.cli_returncode(workload_modify_command)
             if rc != 0:
                 reporting.add_test_step(
@@ -378,7 +386,7 @@ class WorkloadTest(base.BaseWorkloadmgrTest):
 
             # Condition for Interval value and time difference should not be
             # more than 15 minutes
-            if delta < 900 and interval == interval_after_enable:
+            if delta < 900:
                 reporting.add_test_step(
                     "Verify Interval and Next snapshot run time values are correct",
                     tvaultconf.PASS)
