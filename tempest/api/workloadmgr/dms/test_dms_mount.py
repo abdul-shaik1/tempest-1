@@ -27,18 +27,22 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
     def test_dms_s3_mount_lifecycle_for_snapshot_job(self):
         reporting.add_test_script(str(__name__) + "_s3_mount_lifecycle_api")
         try:
-            # Resolve the default (S3) backup target's mount path from the
-            # WLM API instead of hardcoding/decoding it.
+            # Resolve the target's mount path and kind (s3/nfs) from the
+            # WLM API instead of hardcoding/decoding/assuming either.
             mount_path = self.get_mountpoint_path(tvaultconf.default_btt_id)
-            LOG.debug(f"DMS S3 target mount_path under test: {mount_path}")
+            target_kind = self.get_backup_target_kind(tvaultconf.default_btt_id)
+            LOG.debug(f"DMS target mount_path under test: {mount_path} "
+                     f"(kind={target_kind})")
 
             vm_id = self.create_vm()
             server = self.servers_client.show_server(vm_id)['server']
             node_host = server['OS-EXT-SRV-ATTR:host']
             LOG.debug(f"Test VM {vm_id} scheduled on node: {node_host}")
 
-            # Step 1: idle - target should not be mounted, no S3 FUSE process.
-            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
+            # Step 1: idle - target should not be mounted (S3: no FUSE
+            # process either; NFS: mount table is the whole signal).
+            mounted, running = self.get_dms_mount_state(
+                node_host, mount_path, target_kind)
             LOG.debug(f"Before job: mounted={mounted}, running={running}")
             if not mounted and not running:
                 reporting.add_test_step(
@@ -66,8 +70,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
             start_time = time.time()
             status = self.getSnapshotStatus(workload_id, snapshot_id)
             while status not in ('available', 'error'):
-                mounted, running = self.get_dms_s3_mount_state(
-                    node_host, mount_path)
+                mounted, running = self.get_dms_mount_state(
+                    node_host, mount_path, target_kind)
                 ever_mounted = ever_mounted or mounted
                 ever_running = ever_running or running
                 LOG.debug(f"During job (status={status}): mounted={mounted}, "
@@ -95,7 +99,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
             # Step 3: job complete - target auto-unmounted (ref-count back
             # to 0).
             time.sleep(20)
-            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
+            mounted, running = self.get_dms_mount_state(
+                node_host, mount_path, target_kind)
             LOG.debug(f"After job: mounted={mounted}, running={running}")
             if not mounted and not running:
                 reporting.add_test_step(
@@ -140,7 +145,9 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
         reporting.add_test_script(str(__name__) + "_s3_mount_shared_concurrent_api")
         try:
             mount_path = self.get_mountpoint_path(tvaultconf.default_btt_id)
-            LOG.debug(f"DMS S3 target mount_path under test: {mount_path}")
+            target_kind = self.get_backup_target_kind(tvaultconf.default_btt_id)
+            LOG.debug(f"DMS target mount_path under test: {mount_path} "
+                     f"(kind={target_kind})")
 
             vm_a = self.create_vm()
             host_a = self.servers_client.show_server(vm_a)['server'][
@@ -164,7 +171,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
                     f"{max_attempts} attempts to test same-host mount sharing")
             node_host = host_a
 
-            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
+            mounted, running = self.get_dms_mount_state(
+                node_host, mount_path, target_kind)
             LOG.debug(f"Before jobs: mounted={mounted}, running={running}")
             if not mounted and not running:
                 reporting.add_test_step(
@@ -187,7 +195,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
             start_time = time.time()
             status_a = self.getSnapshotStatus(workload_a, snapshot_a)
             while status_a not in ('available', 'error'):
-                mounted, _ = self.get_dms_s3_mount_state(node_host, mount_path)
+                mounted, _ = self.get_dms_mount_state(
+                    node_host, mount_path, target_kind)
                 if mounted:
                     break
                 if time.time() - start_time > timeout:
@@ -200,13 +209,23 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
             snapshot_b = self.workload_snapshot(workload_b, is_full=True)
 
             # Both jobs should now be racing to use the same target on the
-            # same node - verify DMS shares one mount/process rather than
-            # spawning a second one for job B.
-            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
-            proc_count = self.get_dms_s3_process_count(node_host)
+            # same node - verify DMS shares one mount rather than spawning
+            # a second one for job B. The "exactly one process" half is
+            # S3-specific (a kernel NFS mount has no per-job process to
+            # count in the first place - it's just mounted once, by
+            # nature - so there's nothing meaningful to count for NFS;
+            # the mount-table result alone is the whole signal there).
+            mounted, running = self.get_dms_mount_state(
+                node_host, mount_path, target_kind)
+            if target_kind == 's3':
+                proc_count = self.get_dms_s3_process_count(node_host)
+                shared_ok = mounted and proc_count in (1, None)
+            else:
+                proc_count = None
+                shared_ok = mounted
             LOG.debug(f"During concurrent jobs: mounted={mounted}, "
                      f"running={running}, proc_count={proc_count}")
-            if mounted and proc_count in (1, None):
+            if shared_ok:
                 reporting.add_test_step(
                     "Verify single shared mount/process for concurrent "
                     "jobs on same target", tvaultconf.PASS)
@@ -247,7 +266,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
                 "the same shared target", tvaultconf.PASS)
 
             time.sleep(20)
-            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
+            mounted, running = self.get_dms_mount_state(
+                node_host, mount_path, target_kind)
             LOG.debug(f"After both jobs complete: mounted={mounted}, "
                      f"running={running}")
             if not mounted and not running:
@@ -302,7 +322,9 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
         reporting.add_test_script(str(__name__) + "_s3_mount_lifecycle_oneclick_restore_api")
         try:
             mount_path = self.get_mountpoint_path(tvaultconf.default_btt_id)
-            LOG.debug(f"DMS S3 target mount_path under test: {mount_path}")
+            target_kind = self.get_backup_target_kind(tvaultconf.default_btt_id)
+            LOG.debug(f"DMS target mount_path under test: {mount_path} "
+                     f"(kind={target_kind})")
 
             # Prerequisite: a workload with an available full snapshot,
             # then delete the source VM so the one-click restore works.
@@ -360,8 +382,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
                     if node_host:
                         LOG.debug(f"Restore reported host: {node_host}")
                 if node_host:
-                    mounted, running = self.get_dms_s3_mount_state(
-                        node_host, mount_path)
+                    mounted, running = self.get_dms_mount_state(
+                        node_host, mount_path, target_kind)
                     ever_mounted = ever_mounted or mounted
                     ever_running = ever_running or running
                     LOG.debug(f"During restore (status={status}): "
@@ -414,7 +436,8 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
                     "check DMS mount state against")
 
             time.sleep(20)
-            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
+            mounted, running = self.get_dms_mount_state(
+                node_host, mount_path, target_kind)
             LOG.debug(f"After restore completes: mounted={mounted}, "
                      f"running={running}")
             if not mounted and not running:

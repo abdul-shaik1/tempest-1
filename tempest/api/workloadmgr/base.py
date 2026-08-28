@@ -1375,9 +1375,13 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
     Method to check the Dynamic Mount Service (DMS) mount state for a given
     backup target on a given OpenStack node (identified by its nova host
     attribute, e.g. OS-EXT-SRV-ATTR:host): whether the target's mount path
-    shows up in the host's mount table, and whether the S3 FUSE process is
-    running for it. Reuses the same distro-aware nested-SSH command_prefix
-    pattern check_snapshot_exist_on_backend() above already uses (see
+    shows up in the host's mount table, and - for S3 targets specifically -
+    whether the S3 FUSE process is running for it (see get_dms_mount_state's
+    target_kind param and get_backup_target_kind() below: NFS targets are
+    plain kernel mounts with no such process, so that half of the check is
+    skipped rather than always reading "not running" for them). Reuses the
+    same distro-aware nested-SSH command_prefix pattern
+    check_snapshot_exist_on_backend() above already uses (see
     tvaultconf.command_prefix), rather than a new SSH implementation or a
     hardcoded docker command: fetch_resources.sh generates
     command_prefix_dms_host/_exec per OPENSTACK_DISTRO (docker exec on
@@ -1418,11 +1422,42 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         LOG.debug(f"cmd: {cmd}; stdout: {stdout}; stderr: {stderr}")
         return stdout
 
-    def get_dms_s3_mount_state(self, node_host, mount_path):
+    '''
+    Method to determine whether a given backup target type (e.g.
+    tvaultconf.default_btt_id, or any value passed as workload_create()'s
+    backup_target_type) is an 's3' or 'nfs' target. DMS's mount check needs
+    to know this: S3 targets have a distinguishable FUSE process to check
+    for; NFS targets are plain kernel mounts with no process at all, so
+    checking for one there always reads as "not running", regardless of
+    whether DMS actually mounted it correctly.
+    '''
+
+    def get_backup_target_kind(self, backup_target_type_id):
+        backup_target_id = self.getBackupTargetFromType(backup_target_type_id)
+        bts = self.listBackupTargets()
+        bt = [b for b in bts if b['id'] == backup_target_id]
+        kind = bt[0]['type'] if bt else None
+        LOG.debug(f"Backup target type ID {backup_target_type_id} -> "
+                 f"backup target {backup_target_id} -> kind: {kind}")
+        return kind
+
+    def get_dms_mount_state(self, node_host, mount_path, target_kind='s3'):
         mount_out = self._run_on_dms_node(
             getattr(tvaultconf, "command_prefix_dms_host", ""),
             node_host, f"findmnt {mount_path}")
         mount_present = bool(mount_out and mount_out.strip())
+
+        if target_kind != 's3':
+            # Non-S3 targets (NFS today) are plain kernel mounts - DMS
+            # doesn't spawn any separate process for them, so the
+            # mount-table result is the whole signal. Checking for an
+            # S3-only process here would always read "not running" even
+            # when DMS mounted it correctly (confirmed against a real NFS
+            # backup: mount_present was True throughout the upload, but a
+            # process check would have reported it as failed).
+            LOG.debug(f"DMS mount state on {node_host} for {mount_path} "
+                     f"(kind={target_kind}): mount_present={mount_present}")
+            return mount_present, mount_present
 
         # NOTE: server.conf's s3vaultfuse_bin says "s3vaultfuse.py", but
         # trilio-dms-server actually execs /usr/bin/s3vaultfuse (no .py)
