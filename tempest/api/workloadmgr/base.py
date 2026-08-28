@@ -1394,21 +1394,21 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
     Returns (mount_present, fuse_running).
     '''
 
-    def get_dms_s3_mount_state(self, node_host, mount_path):
-        def run_on_node(template, command):
-            if not template:
-                return None
-            cmd = template.replace("<node>", node_host).replace(
-                "<command>", command)
-            p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE)
-            stdout, stderr = p.communicate()
-            LOG.debug(f"cmd: {cmd}; stdout: {stdout}; stderr: {stderr}")
-            return stdout
+    def _run_on_dms_node(self, template, node_host, command):
+        if not template:
+            return None
+        cmd = template.replace("<node>", node_host).replace(
+            "<command>", command)
+        p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+        stdout, stderr = p.communicate()
+        LOG.debug(f"cmd: {cmd}; stdout: {stdout}; stderr: {stderr}")
+        return stdout
 
-        mount_out = run_on_node(
+    def get_dms_s3_mount_state(self, node_host, mount_path):
+        mount_out = self._run_on_dms_node(
             getattr(tvaultconf, "command_prefix_dms_host", ""),
-            f"findmnt {mount_path}")
+            node_host, f"findmnt {mount_path}")
         mount_present = bool(mount_out and mount_out.strip())
 
         # NOTE: server.conf's s3vaultfuse_bin says "s3vaultfuse.py", but
@@ -1416,8 +1416,9 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         # per trilio-dms-server.log - match on that.
         exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
         if exec_template:
-            fuse_out = run_on_node(
-                exec_template, "ps -ef | grep s3vaultfuse | grep -v grep")
+            fuse_out = self._run_on_dms_node(
+                exec_template, node_host,
+                "ps -ef | grep s3vaultfuse | grep -v grep")
             fuse_running = bool(fuse_out and fuse_out.strip())
         else:
             LOG.warning("tvaultconf.command_prefix_dms_exec is not "
@@ -1429,6 +1430,29 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         LOG.debug(f"DMS mount state on {node_host} for {mount_path}: "
                  f"mount_present={mount_present}, fuse_running={fuse_running}")
         return mount_present, fuse_running
+
+    '''
+    Method to count how many S3 FUSE processes are currently running on a
+    given node. Used to verify DMS reuses a single shared mount/process for
+    concurrent jobs against the same backup target rather than spawning one
+    per job. Returns None (rather than 0) when command_prefix_dms_exec isn't
+    configured for this distro, so callers can tell "not checkable" apart
+    from "checked, found zero".
+    '''
+
+    def get_dms_s3_process_count(self, node_host):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            LOG.warning("tvaultconf.command_prefix_dms_exec is not "
+                    "configured for this environment's OPENSTACK_DISTRO; "
+                    "cannot count S3 FUSE processes")
+            return None
+        fuse_out = self._run_on_dms_node(
+            exec_template, node_host,
+            "ps -ef | grep s3vaultfuse | grep -v grep")
+        lines = [l for l in fuse_out.decode(errors="replace").splitlines()
+                if l.strip()] if fuse_out else []
+        return len(lines)
 
     '''
     Method to list all floating ips
