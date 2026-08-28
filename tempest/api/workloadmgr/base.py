@@ -1371,6 +1371,66 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         return ssh
 
     '''
+    Method to check the Dynamic Mount Service (DMS) mount state for a given
+    backup target on a given OpenStack node (identified by its nova host
+    attribute, e.g. OS-EXT-SRV-ATTR:host): whether the target's mount path
+    shows up in the host's mount table, and whether the S3 FUSE process is
+    running for it. Reuses the same distro-aware nested-SSH command_prefix
+    pattern check_snapshot_exist_on_backend() above already uses (see
+    tvaultconf.command_prefix), rather than a new SSH implementation or a
+    hardcoded docker command: fetch_resources.sh generates
+    command_prefix_dms_host/_exec per OPENSTACK_DISTRO (docker exec on
+    KOLLA, podman exec on RHOSP/RHOSO, etc.) from openstack-setup.conf, with
+    a <node> placeholder (alongside <command>) since - unlike the other
+    command_prefix* variants, which target one fixed host - DMS needs
+    whichever node the VM under test actually landed on.
+    _host runs directly on the bare node (e.g. findmnt - the DMS container
+    bind-mounts /var/trilio with shared host propagation, so the mount is
+    visible without entering the container); _exec runs inside the DMS
+    container itself (e.g. the s3vaultfuse process check, which lives in
+    the container's own PID namespace). _exec may be unset for a distro
+    where that path isn't established/verified yet (see fetch_resources.sh)
+    - the process check is skipped in that case rather than guessed at.
+    Returns (mount_present, fuse_running).
+    '''
+
+    def get_dms_s3_mount_state(self, node_host, mount_path):
+        def run_on_node(template, command):
+            if not template:
+                return None
+            cmd = template.replace("<node>", node_host).replace(
+                "<command>", command)
+            p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE)
+            stdout, stderr = p.communicate()
+            LOG.debug(f"cmd: {cmd}; stdout: {stdout}; stderr: {stderr}")
+            return stdout
+
+        mount_out = run_on_node(
+            getattr(tvaultconf, "command_prefix_dms_host", ""),
+            f"findmnt {mount_path}")
+        mount_present = bool(mount_out and mount_out.strip())
+
+        # NOTE: server.conf's s3vaultfuse_bin says "s3vaultfuse.py", but
+        # trilio-dms-server actually execs /usr/bin/s3vaultfuse (no .py)
+        # per trilio-dms-server.log - match on that.
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if exec_template:
+            fuse_out = run_on_node(
+                exec_template, "ps -ef | grep s3vaultfuse | grep -v grep")
+            fuse_running = bool(fuse_out and fuse_out.strip())
+        else:
+            LOG.warning("tvaultconf.command_prefix_dms_exec is not "
+                    "configured for this environment's OPENSTACK_DISTRO "
+                    "(see fetch_resources.sh); skipping S3 FUSE process "
+                    "check and falling back to the mount-table result")
+            fuse_running = mount_present
+
+        LOG.debug(f"DMS mount state on {node_host} for {mount_path}: "
+                 f"mount_present={mount_present}, fuse_running={fuse_running}")
+        return mount_present, fuse_running
+
+    '''
     Method to list all floating ips
     '''
 
