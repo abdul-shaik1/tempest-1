@@ -17,6 +17,7 @@ import time
 import json
 import paramiko
 import os
+import signal
 import stat
 import requests
 import re
@@ -1394,14 +1395,26 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
     Returns (mount_present, fuse_running).
     '''
 
-    def _run_on_dms_node(self, template, node_host, command):
+    def _run_on_dms_node(self, template, node_host, command, timeout=30):
         if not template:
             return None
         cmd = template.replace("<node>", node_host).replace(
             "<command>", command)
+        # start_new_session so a timeout can kill the whole process group
+        # (the nested ssh/docker-exec chain), not just the outer ssh.
         p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE)
-        stdout, stderr = p.communicate()
+                stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            stdout, stderr = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            LOG.warning(f"DMS node command timed out after {timeout}s, "
+                    f"killing it: {cmd}")
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.communicate()
+            return None
         LOG.debug(f"cmd: {cmd}; stdout: {stdout}; stderr: {stderr}")
         return stdout
 
