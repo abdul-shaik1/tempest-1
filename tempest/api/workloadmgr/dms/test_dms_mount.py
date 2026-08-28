@@ -265,3 +265,170 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
             reporting.set_test_script_status(tvaultconf.FAIL)
         finally:
             reporting.test_case_to_write()
+
+    @decorators.attr(type='workloadmgr_api')
+    def test_dms_s3_mount_lifecycle_for_oneclick_restore(self):
+        """
+        TC-DMS-03: On-demand mount is created for a one-click restore and
+        auto-unmounted after it completes.
+
+        Mirrors TC-DMS-01 but for the read side (restore) instead of the
+        write side (backup) - the restored VM may land on a different
+        compute node than the one the original backup ran on, so the node
+        to check is determined from the restore's own result, not the
+        original VM.
+
+        One-click restore only works correctly if the original VM (and its
+        volumes) is deleted after the snapshot completes and before the
+        restore is triggered - mirrors the existing
+        restore/test_tvault1040_oneclick_restore.py pattern.
+
+        NOTE: this triggers the restore with the same WLM API payload
+        self.snapshot_restore() uses, rather than calling that helper
+        directly - snapshot_restore() calls
+        wait_for_snapshot_tobe_available() again right after posting the
+        restore, and that snapshot's own status apparently stays busy
+        until the restore itself fully finishes, so snapshot_restore()
+        doesn't return until the whole restore (backup+restore combined:
+        ~170s observed) is already done - there's no "during restore"
+        window left to poll from outside that call by the time it
+        returns. Posting directly (same payload, same restore_id) and
+        polling with the same getRestoreStatus()/get_restored_vm_list()
+        helpers snapshot_restore() itself uses internally, plus
+        registering the exact same cleanup it would have, keeps this
+        using only existing pieces without going through the wrapper
+        that hides the window this test needs to observe.
+        """
+        reporting.add_test_script(str(__name__) + "_s3_mount_lifecycle_oneclick_restore_api")
+        try:
+            mount_path = self.get_mountpoint_path(tvaultconf.default_btt_id)
+            LOG.debug(f"DMS S3 target mount_path under test: {mount_path}")
+
+            # Prerequisite: a workload with an available full snapshot,
+            # then delete the source VM so the one-click restore works.
+            vm_id = self.create_vm(vm_cleanup=False)
+            workload_id = self.workload_create([vm_id])
+            snapshot_id = self.workload_snapshot(workload_id, is_full=True)
+            self.wait_for_snapshot_tobe_available(workload_id, snapshot_id)
+            self.delete_vm(vm_id)
+            LOG.debug(f"Deleted source VM {vm_id} before triggering restore")
+
+            # Same payload self.snapshot_restore() posts internally.
+            restore_name = tvaultconf.snapshot_restore_name
+            payload = {
+                "restore": {
+                    "options": {
+                        "description": "Tempest test restore",
+                        "vmware": {},
+                        "openstack": {"instances": [], "zone": ""},
+                        "restore_type": "oneclick",
+                        "type": "openstack",
+                        "oneclickrestore": "True",
+                        "restore_options": {},
+                        "name": restore_name},
+                    "name": restore_name,
+                    "description": "Tempest test restore"}}
+            resp, body = self.wlm_client.client.post(
+                "/workloads/" + workload_id + "/snapshots/" + snapshot_id +
+                "/restores", json=payload)
+            if resp.status_code != 202:
+                resp.raise_for_status()
+            restore_id = body['restore']['id']
+            LOG.debug(f"Restore ID: {restore_id}")
+
+            # Poll restore status, DMS mount state, and the restored VM's
+            # node together - same polling rationale as TC-DMS-01's step 2,
+            # just combined with node discovery since we don't know which
+            # node the restored VM lands on until the restore reports it.
+            node_host = None
+            ever_mounted, ever_running = False, False
+            timeout = 900
+            start_time = time.time()
+            status = self.getRestoreStatus(workload_id, snapshot_id, restore_id)
+            while status not in ('available', 'error'):
+                if node_host is None:
+                    # The restore's own record reports which node is doing
+                    # its data transfer directly (top-level 'host', not
+                    # snapshot_details['host'] which is where the original
+                    # backup ran) - this is available well before the
+                    # restored VM exists in Nova, unlike deriving the node
+                    # from get_restored_vm_list()/show_server(), which
+                    # arrived too late to catch the mount window (the
+                    # restore's actual data transfer finishes before the
+                    # new VM is even created/bootable).
+                    node_host = self.getRestoreDetails(restore_id).get('host')
+                    if node_host:
+                        LOG.debug(f"Restore reported host: {node_host}")
+                if node_host:
+                    mounted, running = self.get_dms_s3_mount_state(
+                        node_host, mount_path)
+                    ever_mounted = ever_mounted or mounted
+                    ever_running = ever_running or running
+                    LOG.debug(f"During restore (status={status}): "
+                             f"mounted={mounted}, running={running}")
+                    if ever_mounted and ever_running:
+                        break
+                if time.time() - start_time > timeout:
+                    LOG.error("Timeout waiting to observe DMS mount during "
+                            "restore")
+                    break
+                time.sleep(3)
+                status = self.getRestoreStatus(workload_id, snapshot_id, restore_id)
+
+            if ever_mounted and ever_running:
+                reporting.add_test_step(
+                    "Verify S3 target mounted on-demand during restore",
+                    tvaultconf.PASS)
+            else:
+                reporting.add_test_step(
+                    "Verify S3 target mounted on-demand during restore",
+                    tvaultconf.FAIL)
+                reporting.set_test_script_status(tvaultconf.FAIL)
+
+            while status not in ('available', 'error'):
+                time.sleep(10)
+                status = self.getRestoreStatus(workload_id, snapshot_id, restore_id)
+            if status != 'available':
+                raise Exception(f"Restore ended in status: {status}")
+            reporting.add_test_step(
+                "Verify one-click restore completes successfully",
+                tvaultconf.PASS)
+
+            # Same cleanup registration self.snapshot_restore() does.
+            restored_vms = self.get_restored_vm_list(restore_id)
+            restored_volumes = self.get_restored_volume_list(restore_id)
+            for each in self.getRestoredSecGroupPolicies(restored_vms):
+                secgrp_id = self.get_restored_security_group_id_by_name(each)
+                self.addCleanup(self.delete_security_group, secgrp_id)
+            self.addCleanup(self.restore_delete, workload_id, snapshot_id,
+                            restore_id)
+            self.addCleanup(self.delete_restored_vms, restored_vms,
+                            restored_volumes)
+
+            if node_host is None:
+                # Restore finished before a node was ever discovered (e.g.
+                # it errored immediately) - nothing meaningful to check for
+                # the unmount step either.
+                raise Exception(
+                    "Restore completed without ever reporting a host to "
+                    "check DMS mount state against")
+
+            time.sleep(20)
+            mounted, running = self.get_dms_s3_mount_state(node_host, mount_path)
+            LOG.debug(f"After restore completes: mounted={mounted}, "
+                     f"running={running}")
+            if not mounted and not running:
+                reporting.add_test_step(
+                    "Verify S3 target auto-unmounted after restore completes",
+                    tvaultconf.PASS)
+            else:
+                reporting.add_test_step(
+                    "Verify S3 target auto-unmounted after restore completes",
+                    tvaultconf.FAIL)
+                reporting.set_test_script_status(tvaultconf.FAIL)
+        except Exception as e:
+            LOG.error("Exception: " + str(e))
+            reporting.add_test_step(str(e), tvaultconf.FAIL)
+            reporting.set_test_script_status(tvaultconf.FAIL)
+        finally:
+            reporting.test_case_to_write()
