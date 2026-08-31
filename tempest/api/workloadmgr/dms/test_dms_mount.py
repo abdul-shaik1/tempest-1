@@ -455,3 +455,174 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
             reporting.set_test_script_status(tvaultconf.FAIL)
         finally:
             reporting.test_case_to_write()
+
+    @decorators.attr(type='workloadmgr_api')
+    def test_dms_s3_mount_independent_across_two_nodes_single_job(self):
+        """
+        TC-DMS-06: A single job spanning two VMs on two different compute
+        nodes gets the same backup target mounted independently on each
+        node - not shared/conflated across hosts the way TC-DMS-02 proved
+        it's shared within the same host.
+
+        DMS's mount key is (host, backup_target_id), so this exercises
+        the host half of that pairing: TC-DMS-02 forced two *separate*
+        jobs onto the *same* node (same target -> one shared mount);
+        this forces *one* job across two *different* nodes (same target
+        -> two independent mounts, one per node).
+
+        Requires at least 2 enabled/up compute nodes - checked upfront
+        via Nova's hypervisor-list before creating anything, so an
+        under-resourced environment fails fast with a clear message
+        instead of trying to schedule anything.
+
+        NOTE: originally used TC-DMS-02's retry-until-it-lands style loop
+        (creating VMs until one landed on a different node), but a live
+        run showed this scheduler is heavily biased toward one compute
+        node - 6/6 attempts landed on the same node here, so that
+        approach isn't reliable for a test that specifically needs two
+        *different* nodes (unlike TC-DMS-02, which is fine with either
+        outcome). Explicitly pins each VM to one of the two discovered
+        nodes via Nova's "<zone>:<host>" availability_zone syntax instead
+        - deterministic, no retries needed.
+        """
+        reporting.add_test_script(
+            str(__name__) + "_s3_mount_independent_two_nodes_api")
+        try:
+            hypervisors = self.hypervisor_client.list_hypervisors()[
+                'hypervisors']
+            enabled = [h['hypervisor_hostname'] for h in hypervisors
+                      if h.get('state') == 'up'
+                      and h.get('status') == 'enabled']
+            if len(enabled) < 2:
+                raise Exception(
+                    f"Prerequisite not met: TC-DMS-06 requires at least "
+                    f"2 enabled compute nodes to test cross-node mount "
+                    f"isolation, found {len(enabled)} ({enabled})")
+            node_a, node_b = enabled[0], enabled[1]
+            zone = CONF.compute.vm_availability_zone
+            LOG.debug(f"Pinning VM A to {zone}:{node_a}, "
+                     f"VM B to {zone}:{node_b}")
+
+            mount_path = self.get_mountpoint_path(tvaultconf.default_btt_id)
+            target_kind = self.get_backup_target_kind(tvaultconf.default_btt_id)
+            LOG.debug(f"DMS target mount_path under test: {mount_path} "
+                     f"(kind={target_kind})")
+
+            vm_a = self.create_vm(a_zone=f"{zone}:{node_a}")
+            host_a = self.servers_client.show_server(vm_a)['server'][
+                'OS-EXT-SRV-ATTR:host']
+            LOG.debug(f"VM A {vm_a} scheduled on node: {host_a}")
+
+            vm_b = self.create_vm(a_zone=f"{zone}:{node_b}")
+            host_b = self.servers_client.show_server(vm_b)['server'][
+                'OS-EXT-SRV-ATTR:host']
+            LOG.debug(f"VM B {vm_b} scheduled on node: {host_b}")
+
+            if host_a == host_b:
+                raise Exception(
+                    f"Both VMs landed on the same node ({host_a}) despite "
+                    f"explicit different availability-zone pinning "
+                    f"({zone}:{node_a} / {zone}:{node_b}) - cannot test "
+                    f"cross-node mount isolation")
+
+            mounted_a, running_a = self.get_dms_mount_state(
+                host_a, mount_path, target_kind)
+            mounted_b, running_b = self.get_dms_mount_state(
+                host_b, mount_path, target_kind)
+            LOG.debug(f"Before job: node A mounted={mounted_a}, "
+                     f"running={running_a}; node B mounted={mounted_b}, "
+                     f"running={running_b}")
+            if (not mounted_a and not running_a
+                    and not mounted_b and not running_b):
+                reporting.add_test_step(
+                    "Verify target not mounted on either node before job "
+                    "starts", tvaultconf.PASS)
+            else:
+                reporting.add_test_step(
+                    "Verify target not mounted on either node before job "
+                    "starts", tvaultconf.FAIL)
+                reporting.set_test_script_status(tvaultconf.FAIL)
+
+            workload_id = self.workload_create([vm_a, vm_b])
+            snapshot_id = self.workload_snapshot(workload_id, is_full=True)
+
+            # Poll both nodes together alongside the snapshot's own status,
+            # same rationale as TC-DMS-01's step 2 - the job's mount phase
+            # for each VM's data can start at different times, so a single
+            # early check on either node could miss it.
+            ever_mounted_a, ever_running_a = False, False
+            ever_mounted_b, ever_running_b = False, False
+            timeout = 1800
+            start_time = time.time()
+            status = self.getSnapshotStatus(workload_id, snapshot_id)
+            while status not in ('available', 'error'):
+                mounted_a, running_a = self.get_dms_mount_state(
+                    host_a, mount_path, target_kind)
+                mounted_b, running_b = self.get_dms_mount_state(
+                    host_b, mount_path, target_kind)
+                ever_mounted_a = ever_mounted_a or mounted_a
+                ever_running_a = ever_running_a or running_a
+                ever_mounted_b = ever_mounted_b or mounted_b
+                ever_running_b = ever_running_b or running_b
+                LOG.debug(f"During job (status={status}): "
+                         f"A mounted={mounted_a}/running={running_a}, "
+                         f"B mounted={mounted_b}/running={running_b}")
+                if (ever_mounted_a and ever_running_a
+                        and ever_mounted_b and ever_running_b):
+                    break
+                if time.time() - start_time > timeout:
+                    LOG.error("Timeout waiting to observe DMS mount on "
+                            "both nodes during job")
+                    break
+                time.sleep(15)
+                status = self.getSnapshotStatus(workload_id, snapshot_id)
+
+            if ever_mounted_a and ever_running_a:
+                reporting.add_test_step(
+                    "Verify target mounted independently on node A",
+                    tvaultconf.PASS)
+            else:
+                reporting.add_test_step(
+                    "Verify target mounted independently on node A",
+                    tvaultconf.FAIL)
+                reporting.set_test_script_status(tvaultconf.FAIL)
+
+            if ever_mounted_b and ever_running_b:
+                reporting.add_test_step(
+                    "Verify target mounted independently on node B",
+                    tvaultconf.PASS)
+            else:
+                reporting.add_test_step(
+                    "Verify target mounted independently on node B",
+                    tvaultconf.FAIL)
+                reporting.set_test_script_status(tvaultconf.FAIL)
+
+            self.wait_for_snapshot_tobe_available(workload_id, snapshot_id)
+            reporting.add_test_step(
+                "Verify single job spanning two nodes completes "
+                "successfully", tvaultconf.PASS)
+
+            time.sleep(20)
+            mounted_a, running_a = self.get_dms_mount_state(
+                host_a, mount_path, target_kind)
+            mounted_b, running_b = self.get_dms_mount_state(
+                host_b, mount_path, target_kind)
+            LOG.debug(f"After job: node A mounted={mounted_a}, "
+                     f"running={running_a}; node B mounted={mounted_b}, "
+                     f"running={running_b}")
+            if (not mounted_a and not running_a
+                    and not mounted_b and not running_b):
+                reporting.add_test_step(
+                    "Verify target auto-unmounted on both nodes after "
+                    "job completes", tvaultconf.PASS)
+            else:
+                reporting.add_test_step(
+                    "Verify target auto-unmounted on both nodes after "
+                    "job completes", tvaultconf.FAIL)
+                reporting.set_test_script_status(tvaultconf.FAIL)
+        except Exception as e:
+            LOG.error("Exception: " + str(e))
+            reporting.add_test_step(str(e), tvaultconf.FAIL)
+            reporting.set_test_script_status(tvaultconf.FAIL)
+        finally:
+            reporting.test_case_to_write()
