@@ -1527,9 +1527,13 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
                 "tvaultconf.command_prefix_dms_exec is not configured for "
                 "this environment's OPENSTACK_DISTRO; cannot invoke "
                 "trilio-dms-cli")
+        # Same wlm_dbport fallback db_handler.dbHandler() already uses -
+        # OS-HELM's fetch_resources.sh branch discovers a non-default
+        # MySQL port dynamically, so this can't just hardcode 3306.
+        db_port = getattr(tvaultconf, "wlm_dbport", None) or 3306
         db_url = (f"mysql+pymysql://{tvaultconf.wlm_dbusername}:"
-                 f"{tvaultconf.wlm_dbpasswd}@{tvaultconf.wlm_dbhost}:3306/"
-                 f"{tvaultconf.tvault_dbname}")
+                 f"{tvaultconf.wlm_dbpasswd}@{tvaultconf.wlm_dbhost}:"
+                 f"{db_port}/{tvaultconf.tvault_dbname}")
         # No quoting around these values (matching get_dms_mount_state's
         # findmnt/ps-ef commands above) - command_prefix_dms_exec's own
         # nested single-quote structure means an inner value containing
