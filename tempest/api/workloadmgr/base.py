@@ -1610,6 +1610,123 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         return enabled[0]
 
     '''
+    Method to read the PID DMS itself recorded for a given S3 target's
+    s3vaultfuse process, from its PID file at /run/dms/s3/<target_id>.pid
+    (confirmed against the real S3VaultFuseManager source -
+    PID_DIR = '/run/dms/s3') - used by fault-recovery tests to identify
+    the exact process to crash, and later to confirm a *new* PID shows
+    up after DMS self-heals. Returns None if the file doesn't exist or
+    isn't a valid integer, rather than raising, so callers can treat
+    "no PID file" as a normal (if noteworthy) outcome instead of an
+    error.
+    '''
+
+    def get_dms_s3_pid(self, node_host, target_id):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            return None
+        out = self._run_on_dms_node(
+            exec_template, node_host, f"cat /run/dms/s3/{target_id}.pid")
+        text = out.decode(errors="replace").strip() if out else ""
+        try:
+            return int(text)
+        except ValueError:
+            return None
+
+    '''
+    Method to send SIGKILL (default) or SIGTERM to a specific PID inside
+    the DMS container - used to simulate a crashed s3vaultfuse process
+    for fault-recovery testing. Only ever called with a PID read from
+    DMS's own PID file for the target under test (get_dms_s3_pid()), so
+    this stays scoped to our own test's process rather than touching
+    anything else running in the shared container.
+    '''
+
+    def kill_process_on_dms_node(self, node_host, pid, force=True):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            raise Exception(
+                "tvaultconf.command_prefix_dms_exec is not configured for "
+                "this environment's OPENSTACK_DISTRO; cannot kill a "
+                "process inside the DMS container")
+        sig = "-9" if force else "-15"
+        self._run_on_dms_node(exec_template, node_host, f"kill {sig} {pid}")
+
+    '''
+    Method to check the exact errno a fresh os.stat() on mount_path
+    raises inside the DMS container - mirrors is_stale_mount()'s own
+    check (trilio_dms/utils.py, confirmed against the real source)
+    exactly, so this reports the same ground truth DMS itself would see
+    rather than a proxy signal like a process count. Returns the errno
+    as an int (e.g. 107 for ENOTCONN, 116 for ESTALE), or None if the
+    stat succeeds (path is healthy/not stale).
+    '''
+
+    def get_dms_mount_errno(self, node_host, mount_path):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            return None
+        # A multi-line Python one-liner doesn't survive the nested
+        # ssh/docker-exec quoting layers command_prefix_dms_exec goes
+        # through (confirmed live - newlines get passed through
+        # literally rather than executed), so this matches plain
+        # `stat`'s own stderr text against the well-known strerror()
+        # strings for the two errnos DMS's is_stale_mount() checks for,
+        # instead of trying to run Python remotely for it.
+        out = self._run_on_dms_node(
+            exec_template, node_host, f"stat {mount_path} 2>&1")
+        text = out.decode(errors="replace") if out else ""
+        if "Transport endpoint is not connected" in text:
+            return 107  # ENOTCONN
+        if "Stale file handle" in text:
+            return 116  # ESTALE
+        if "No such file or directory" in text:
+            return None
+        if "File:" in text:
+            return None  # healthy stat output
+        return None
+
+    '''
+    Method to get the current line count of trilio-dms-server.log inside
+    the DMS container - used as a marker so a later check
+    (get_dms_server_log_since()) can look at only the log lines written
+    *after* this point, rather than possibly matching on unrelated older
+    activity for the same target. Reads from inside the container
+    (server.conf's own log_file path) rather than the bare host, since
+    the host-side bind-mount source directory name is Kolla-specific and
+    wouldn't be portable to other distros the way the in-container path
+    is.
+    '''
+
+    def get_dms_server_log_marker(self, node_host):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            return 0
+        out = self._run_on_dms_node(
+            exec_template, node_host,
+            "wc -l < /var/log/triliovault/trilio-dms-server.log")
+        text = out.decode(errors="replace").strip() if out else ""
+        try:
+            return int(text)
+        except ValueError:
+            return 0
+
+    '''
+    Method to fetch trilio-dms-server.log lines written after a given
+    marker (see get_dms_server_log_marker()).
+    '''
+
+    def get_dms_server_log_since(self, node_host, marker):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            return ""
+        out = self._run_on_dms_node(
+            exec_template, node_host,
+            f"tail -n +{marker + 1} "
+            f"/var/log/triliovault/trilio-dms-server.log")
+        return out.decode(errors="replace") if out else ""
+
+    '''
     Method to list all floating ips
     '''
 
