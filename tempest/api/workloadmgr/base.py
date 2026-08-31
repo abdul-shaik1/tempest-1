@@ -33,7 +33,9 @@ from tempest import config
 import tempest.test
 from tempest.common import waiters
 from oslo_config import cfg
+from tempest.lib import auth
 from tempest.lib import exceptions as lib_exc
+from tempest import clients
 from datetime import datetime
 from datetime import timedelta
 from tempest import tvaultconf
@@ -1501,6 +1503,88 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         lines = [l for l in fuse_out.decode(errors="replace").splitlines()
                 if l.strip()] if fuse_out else []
         return len(lines)
+
+    '''
+    Method to invoke trilio-dms-cli directly (mount/unmount) for low-level
+    DMS ledger/reference-counting tests - this bypasses the normal
+    snapshot/restore-driven mount flow entirely, talking to trilio-dms
+    over the same RabbitMQ RPC path a real job's mount/unmount request
+    would use, but under our own control. Needs --rabbitmq-url/--db-url
+    passed explicitly (see tvaultconf.dms_rabbitmq_url) since
+    /etc/triliovault-dms/client.conf ships as an unconfigured template on
+    at least this environment. Returns the CLI's stdout (its human-readable
+    ✓/status lines are the actual signal these tests check, e.g. "new
+    physical mount" vs "reused existing mount" - confirmed live against a
+    real environment before relying on this wording in tests).
+    '''
+
+    def run_dms_cli(self, node_host, action, job_id, target_id, target_type,
+                    mount_path, filesystem_export=None, secret_ref=None,
+                    token=None):
+        exec_template = getattr(tvaultconf, "command_prefix_dms_exec", "")
+        if not exec_template:
+            raise Exception(
+                "tvaultconf.command_prefix_dms_exec is not configured for "
+                "this environment's OPENSTACK_DISTRO; cannot invoke "
+                "trilio-dms-cli")
+        db_url = (f"mysql+pymysql://{tvaultconf.wlm_dbusername}:"
+                 f"{tvaultconf.wlm_dbpasswd}@{tvaultconf.wlm_dbhost}:3306/"
+                 f"{tvaultconf.tvault_dbname}")
+        # No quoting around these values (matching get_dms_mount_state's
+        # findmnt/ps-ef commands above) - command_prefix_dms_exec's own
+        # nested single-quote structure means an inner value containing
+        # single quotes would corrupt the outer parsing; none of these
+        # values (URLs, IDs, the base64-suffixed mount path) contain
+        # spaces or shell metacharacters, so plain unquoted works and
+        # avoids that risk.
+        parts = [
+            "trilio-dms-cli",
+            f"--rabbitmq-url {tvaultconf.dms_rabbitmq_url}",
+            f"--db-url {db_url}",
+            f"--node-id {node_host}",
+            action,
+            f"--job-id {job_id}",
+            f"--target-id {target_id}",
+            f"--target-type {target_type}",
+            f"--host {node_host}",
+            f"--mount-path {mount_path}",
+        ]
+        if filesystem_export:
+            parts.append(f"--filesystem-export {filesystem_export}")
+        if secret_ref:
+            parts.append(f"--secret-ref {secret_ref}")
+        if token:
+            parts.append(f"--token {token}")
+        command = " ".join(parts)
+        out = self._run_on_dms_node(exec_template, node_host, command,
+                                    timeout=60)
+        output = out.decode(errors="replace") if out else ""
+        LOG.debug(f"trilio-dms-cli {action} (job_id={job_id}) output: "
+                 f"{output}")
+        return output
+
+    '''
+    Method to get a Keystone token scoped to CONF.auth's admin identity
+    (admin_username/admin_password/admin_project_name/admin_domain_name) -
+    needed for an S3 trilio-dms-cli mount, which fetches its secret from
+    Barbican and requires a token scoped to whichever project actually
+    owns that secret. Confirmed live: the primary test identity
+    (tvaultconf's trilio-*-user) does NOT have access to it - Barbican
+    rejects with "Access denied to secret" - only this admin identity
+    does. This CONF.auth.admin_* group is otherwise unused here (only
+    meaningful when use_dynamic_credentials=True, which this suite has
+    off), so repurposing it for this is safe.
+    '''
+
+    def get_admin_scoped_token(self):
+        creds = auth.KeystoneV3Credentials(
+            username=CONF.auth.admin_username,
+            password=CONF.auth.admin_password,
+            project_name=CONF.auth.admin_project_name,
+            domain_name=CONF.auth.admin_domain_name,
+            user_domain_name=CONF.auth.admin_domain_name)
+        mgr = clients.Manager(creds)
+        return mgr.auth_provider.get_token()
 
     '''
     Method to list all floating ips
