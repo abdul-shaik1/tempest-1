@@ -484,20 +484,29 @@ class DMSMountTest(base.BaseWorkloadmgrTest):
         outcome). Explicitly pins each VM to one of the two discovered
         nodes via Nova's "<zone>:<host>" availability_zone syntax instead
         - deterministic, no retries needed.
+
+        The compute-node-count prerequisite check runs before
+        reporting.add_test_script() and uses self.skipTest() rather than
+        raising - this environment gap isn't a DMS bug to report as a
+        FAIL, so it's a real stestr SKIP (visible in the test run output)
+        and intentionally does not add anything to Report/results.html at
+        all, rather than showing up there as a red FAIL for something
+        outside this test's control.
         """
+        hypervisors = self.hypervisor_client.list_hypervisors()[
+            'hypervisors']
+        enabled = [h['hypervisor_hostname'] for h in hypervisors
+                  if h.get('state') == 'up'
+                  and h.get('status') == 'enabled']
+        if len(enabled) < 2:
+            self.skipTest(
+                f"TC-DMS-06 requires at least 2 enabled compute nodes to "
+                f"test cross-node mount isolation, found {len(enabled)} "
+                f"({enabled})")
+
         reporting.add_test_script(
             str(__name__) + "_s3_mount_independent_two_nodes_api")
         try:
-            hypervisors = self.hypervisor_client.list_hypervisors()[
-                'hypervisors']
-            enabled = [h['hypervisor_hostname'] for h in hypervisors
-                      if h.get('state') == 'up'
-                      and h.get('status') == 'enabled']
-            if len(enabled) < 2:
-                raise Exception(
-                    f"Prerequisite not met: TC-DMS-06 requires at least "
-                    f"2 enabled compute nodes to test cross-node mount "
-                    f"isolation, found {len(enabled)} ({enabled})")
             node_a, node_b = enabled[0], enabled[1]
             zone = CONF.compute.vm_availability_zone
             LOG.debug(f"Pinning VM A to {zone}:{node_a}, "
