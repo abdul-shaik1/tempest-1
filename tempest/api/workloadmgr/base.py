@@ -62,6 +62,7 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         cls.subnets_client = cls.os_primary.subnets_client
         cls.wlm_client = cls.os_primary.wlm_client
         cls.servers_client = cls.os_primary.servers_client
+        cls.hypervisor_client = cls.os_primary.hypervisor_client
         cls.interfaces_client = cls.os_primary.interfaces_client
         cls.flavors_client = cls.os_primary.flavors_client
         cls.floating_ips_client = cls.os_primary.floating_ips_client
@@ -1589,6 +1590,24 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
             user_domain_name=CONF.auth.admin_domain_name)
         mgr = clients.Manager(creds)
         return mgr.auth_provider.get_token()
+
+    '''
+    Method to get a valid, enabled/up compute node's hostname (matching
+    Nova's OS-EXT-SRV-ATTR:host / DMS server.conf's node_id) directly from
+    Nova's hypervisor list - for DMS tests that just need *some* real node
+    to target (e.g. direct trilio-dms-cli calls), booting a VM just to read
+    its scheduled host back is unnecessary overhead when Nova can already
+    report every compute node's name with no VM involved at all.
+    '''
+
+    def get_enabled_compute_node(self):
+        hypervisors = self.hypervisor_client.list_hypervisors()['hypervisors']
+        enabled = [h['hypervisor_hostname'] for h in hypervisors
+                  if h.get('state') == 'up' and h.get('status') == 'enabled']
+        if not enabled:
+            raise Exception(
+                "No enabled/up compute node found via hypervisor-list")
+        return enabled[0]
 
     '''
     Method to list all floating ips

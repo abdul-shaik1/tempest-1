@@ -155,9 +155,7 @@ class DMSIdempotencyTest(base.BaseWorkloadmgrTest):
             LOG.debug(f"NFS target under test: {target['id']} "
                      f"({target['filesystem_export']})")
 
-            vm_id = self.create_vm()
-            node_host = self.servers_client.show_server(vm_id)['server'][
-                'OS-EXT-SRV-ATTR:host']
+            node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")
 
             self._verify_mount_refcounting(
@@ -197,9 +195,7 @@ class DMSIdempotencyTest(base.BaseWorkloadmgrTest):
 
             token = self.get_admin_scoped_token()
 
-            vm_id = self.create_vm()
-            node_host = self.servers_client.show_server(vm_id)['server'][
-                'OS-EXT-SRV-ATTR:host']
+            node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")
 
             self._verify_mount_refcounting(
