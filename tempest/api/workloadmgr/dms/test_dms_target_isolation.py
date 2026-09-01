@@ -1,5 +1,3 @@
-import random
-
 from oslo_log import log as logging
 
 from tempest import config
@@ -58,8 +56,10 @@ class DMSTargetIsolationTest(base.BaseWorkloadmgrTest):
             node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")
 
-            nfs_job_id = random.randint(900000000, 999999999)
-            s3_job_id = random.randint(900000000, 999999999)
+            nfs_job_id = tvaultconf.dms_mount_job_id
+            self.increment_dms_mount_job_id()
+            s3_job_id = tvaultconf.dms_mount_job_id
+            self.increment_dms_mount_job_id()
             nfs_mount_path = nfs_target['filesystem_export_mount_path']
             s3_mount_path = s3_target['filesystem_export_mount_path']
 

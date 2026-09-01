@@ -118,4 +118,5 @@ migration_plan_show = "workloadmgr migration-plan-show -f json "
 migration_discover_vms = "workloadmgr migration-plan-discover-vms "
 
 #DMS commands
-dms_cli = "trilio-dms-cli "
+dms_cli = "trilio-dms-cli --rabbitmq-url " + tvaultconf.rabbitmq_url + \
+          " --db-url " + tvaultconf.db_url + " "

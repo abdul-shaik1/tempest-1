@@ -1,5 +1,3 @@
-import random
-
 from oslo_log import log as logging
 
 from tempest import config
@@ -47,7 +45,8 @@ class DMSIdempotencyTest(base.BaseWorkloadmgrTest):
     def _verify_mount_refcounting(self, node_host, target_id, mount_path,
                                   target_kind, filesystem_export=None,
                                   secret_ref=None, token=None):
-        job_id = random.randint(900000000, 999999999)
+        job_id = tvaultconf.dms_mount_job_id
+        self.increment_dms_mount_job_id()
         LOG.debug(f"Synthetic job_id under test: {job_id}")
 
         # First mount - should be a genuinely new physical mount.

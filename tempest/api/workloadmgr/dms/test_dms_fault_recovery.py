@@ -1,5 +1,3 @@
-import random
-
 from oslo_log import log as logging
 
 from tempest import config
@@ -71,8 +69,10 @@ class DMSFaultRecoveryTest(base.BaseWorkloadmgrTest):
             node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")
 
-            job_id_1 = random.randint(900000000, 999999999)
-            job_id_2 = random.randint(900000000, 999999999)
+            job_id_1 = tvaultconf.dms_mount_job_id
+            self.increment_dms_mount_job_id()
+            job_id_2 = tvaultconf.dms_mount_job_id
+            self.increment_dms_mount_job_id()
 
             # Establish a real mount + real s3vaultfuse process under
             # our own control.
