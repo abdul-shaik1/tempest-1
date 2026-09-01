@@ -401,7 +401,8 @@ EOF
 	command_prefix_dms_exec="ssh stack@$UNDERCLOUD_IP 'ssh $OVERCLOUD_USER@<node> 'sudo podman exec triliovault_dms <command>''"
 	# Not yet auto-derived for this distro (only confirmed on KOLLA so
 	# far, see the KOLLA branch below) - left empty rather than guessed.
-	dms_rabbitmq_url=""
+	rabbitmq_url=""
+	db_url=""
 	command_prefix_rbac=""
 	container_names=(triliovault_wlm_api triliovault_wlm_workloads triliovault_wlm_scheduler triliovault-wlm-cron-podman-0)
 	for hst in "${controller_hostname[@]}"
@@ -430,7 +431,11 @@ EOF
 	# on the DMS nodes themselves - read the real broker URL from the
 	# wlm-api container's own DMS client config instead, same value
 	# trilio-dms-server itself connects to.
-	dms_rabbitmq_url=`ssh root@$KOLLA_IP "grep rabbitmq_url /etc/kolla/triliovault-wlm-api/triliovault-dms-client.conf" | cut -d '=' -f 2- | xargs`
+	rabbitmq_url=`ssh root@$KOLLA_IP "grep rabbitmq_url /etc/kolla/triliovault-wlm-api/triliovault-dms-client.conf" | cut -d '=' -f 2- | xargs`
+	# trilio-dms-cli also needs an explicit --db-url - reuse the same
+	# sql_connection value already fetched above for the other wlm_db*
+	# fields, rather than deriving it a second time.
+	db_url=`echo $conn_str | cut -d '=' -f 2- | xargs`
     elif [[ ${OPENSTACK_DISTRO,,} == 'os-helm'* ]]
     then
         wlm_api_pod=`ssh $HELM_USER@$HELM_IP "kubectl get pods | grep wlm-api | head -1" | cut -d ' ' -f1 | xargs`
@@ -451,7 +456,8 @@ EOF
 	# guessed; get_dms_s3_mount_state() degrades gracefully when unset.
 	command_prefix_dms_host=""
 	command_prefix_dms_exec=""
-	dms_rabbitmq_url=""
+	rabbitmq_url=""
+	db_url=""
     elif [[ ${OPENSTACK_DISTRO,,} == 'rhoso'* ]]
     then
         wlm_api_pod=`ssh $BASTION_USER@$BASTION_IP "oc -n trilio-openstack get pods | grep wlm-api | head -1" | cut -d ' ' -f1 | xargs`
@@ -475,7 +481,8 @@ EOF
 	command_prefix_dms_exec="ssh $BASTION_USER@$BASTION_IP 'ssh $COMPUTE_USER@<node> 'sudo podman exec triliovault_dms <command>''"
 	# Not yet auto-derived for this distro (only confirmed on KOLLA so
 	# far, see the KOLLA branch above) - left empty rather than guessed.
-	dms_rabbitmq_url=""
+	rabbitmq_url=""
+	db_url=""
     else
         conn_str=`workloadmgr --insecure setting-list --get_hidden True -f value | grep sql_connection`
         mysql_ip=`echo $conn_str | cut -d '/' -f 3 | cut -d ':' -f 2 | cut -d '@' -f 2`
@@ -745,11 +752,13 @@ EOF
     sed -i '/^command_prefix_rbac = /d' $TEMPEST_TVAULTCONF
     sed -i '/^command_prefix_dms_host = /d' $TEMPEST_TVAULTCONF
     sed -i '/^command_prefix_dms_exec = /d' $TEMPEST_TVAULTCONF
-    sed -i '/^dms_rabbitmq_url = /d' $TEMPEST_TVAULTCONF
+    sed -i '/^rabbitmq_url = /d' $TEMPEST_TVAULTCONF
+    sed -i '/^db_url = /d' $TEMPEST_TVAULTCONF
     echo 'command_prefix = "'$command_prefix'"' >> $TEMPEST_TVAULTCONF
     echo 'command_prefix_wlm = "'$command_prefix_wlm'"' >> $TEMPEST_TVAULTCONF
     echo 'command_prefix_rbac = "'$command_prefix_rbac'"' >> $TEMPEST_TVAULTCONF
-    echo 'dms_rabbitmq_url = "'$dms_rabbitmq_url'"' >> $TEMPEST_TVAULTCONF
+    echo 'rabbitmq_url = "'$rabbitmq_url'"' >> $TEMPEST_TVAULTCONF
+    echo 'db_url = "'$db_url'"' >> $TEMPEST_TVAULTCONF
     echo 'command_prefix_dms_host = "'$command_prefix_dms_host'"' >> $TEMPEST_TVAULTCONF
     echo 'command_prefix_dms_exec = "'$command_prefix_dms_exec'"' >> $TEMPEST_TVAULTCONF
     sed -i 's/\r//g' $TEMPEST_TVAULTCONF

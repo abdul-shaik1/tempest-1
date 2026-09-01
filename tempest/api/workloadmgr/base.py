@@ -1509,7 +1509,7 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
     snapshot/restore-driven mount flow entirely, talking to trilio-dms
     over the same RabbitMQ RPC path a real job's mount/unmount request
     would use, but under our own control. Needs --rabbitmq-url/--db-url
-    passed explicitly (see tvaultconf.dms_rabbitmq_url) since
+    passed explicitly (see tvaultconf.rabbitmq_url) since
     /etc/triliovault-dms/client.conf ships as an unconfigured template on
     at least this environment. Returns the CLI's stdout (its human-readable
     ✓/status lines are the actual signal these tests check, e.g. "new
@@ -1526,13 +1526,20 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
                 "tvaultconf.command_prefix_dms_exec is not configured for "
                 "this environment's OPENSTACK_DISTRO; cannot invoke "
                 "trilio-dms-cli")
-        # Same wlm_dbport fallback db_handler.dbHandler() already uses -
-        # OS-HELM's fetch_resources.sh branch discovers a non-default
-        # MySQL port dynamically, so this can't just hardcode 3306.
-        db_port = getattr(tvaultconf, "wlm_dbport", None) or 3306
-        db_url = (f"mysql+pymysql://{tvaultconf.wlm_dbusername}:"
-                 f"{tvaultconf.wlm_dbpasswd}@{tvaultconf.wlm_dbhost}:"
-                 f"{db_port}/{tvaultconf.tvault_dbname}")
+        # fetch_resources.sh auto-derives a single db_url for KOLLA
+        # (same sql_connection value already used for the other wlm_db*
+        # fields, see the KOLLA branch there). Fall back to assembling
+        # one from the discrete wlm_db* pieces on distros where that
+        # isn't wired up yet - same wlm_dbport fallback
+        # db_handler.dbHandler() already uses, since OS-HELM's
+        # fetch_resources.sh branch discovers a non-default MySQL port
+        # dynamically, so this can't just hardcode 3306.
+        db_url = getattr(tvaultconf, "db_url", "")
+        if not db_url:
+            db_port = getattr(tvaultconf, "wlm_dbport", None) or 3306
+            db_url = (f"mysql+pymysql://{tvaultconf.wlm_dbusername}:"
+                     f"{tvaultconf.wlm_dbpasswd}@{tvaultconf.wlm_dbhost}:"
+                     f"{db_port}/{tvaultconf.tvault_dbname}")
         # No quoting around these values (matching get_dms_mount_state's
         # findmnt/ps-ef commands above) - command_prefix_dms_exec's own
         # nested single-quote structure means an inner value containing
@@ -1542,7 +1549,7 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         # avoids that risk.
         parts = [
             command_argument_string.dms_cli.strip(),
-            f"--rabbitmq-url {tvaultconf.dms_rabbitmq_url}",
+            f"--rabbitmq-url {tvaultconf.rabbitmq_url}",
             f"--db-url {db_url}",
             f"--node-id {node_host}",
             action,
