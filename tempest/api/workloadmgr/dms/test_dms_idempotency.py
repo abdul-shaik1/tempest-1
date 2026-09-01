@@ -179,7 +179,7 @@ class DMSIdempotencyTest(base.BaseWorkloadmgrTest):
         primary test identity (tvaultconf's trilio-*-user) does NOT have
         Barbican access to this secret - confirmed live ("Access denied to
         secret") - only CONF.auth's admin identity does (see
-        get_admin_scoped_token()).
+        get_os_token(admin=True)).
         """
         reporting.add_test_script(
             str(__name__) + "_s3_mount_refcount_api")
@@ -193,7 +193,7 @@ class DMSIdempotencyTest(base.BaseWorkloadmgrTest):
             LOG.debug(f"S3 target under test: {target['id']} "
                      f"({target['filesystem_export']})")
 
-            token = self.get_admin_scoped_token()
+            token = self.get_os_token(admin=True)
 
             node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")

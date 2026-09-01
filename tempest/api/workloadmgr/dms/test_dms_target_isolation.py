@@ -54,7 +54,7 @@ class DMSTargetIsolationTest(base.BaseWorkloadmgrTest):
             LOG.debug(f"NFS target under test: {nfs_target['id']}")
             LOG.debug(f"S3 target under test: {s3_target['id']}")
 
-            token = self.get_admin_scoped_token()
+            token = self.get_os_token(admin=True)
             node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")
 

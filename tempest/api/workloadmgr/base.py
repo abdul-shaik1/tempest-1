@@ -33,9 +33,7 @@ from tempest import config
 import tempest.test
 from tempest.common import waiters
 from oslo_config import cfg
-from tempest.lib import auth
 from tempest.lib import exceptions as lib_exc
-from tempest import clients
 from datetime import datetime
 from datetime import timedelta
 from tempest import tvaultconf
@@ -1543,7 +1541,7 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         # spaces or shell metacharacters, so plain unquoted works and
         # avoids that risk.
         parts = [
-            "trilio-dms-cli",
+            command_argument_string.dms_cli.strip(),
             f"--rabbitmq-url {tvaultconf.dms_rabbitmq_url}",
             f"--db-url {db_url}",
             f"--node-id {node_host}",
@@ -1567,29 +1565,6 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
         LOG.debug(f"trilio-dms-cli {action} (job_id={job_id}) output: "
                  f"{output}")
         return output
-
-    '''
-    Method to get a Keystone token scoped to CONF.auth's admin identity
-    (admin_username/admin_password/admin_project_name/admin_domain_name) -
-    needed for an S3 trilio-dms-cli mount, which fetches its secret from
-    Barbican and requires a token scoped to whichever project actually
-    owns that secret. Confirmed live: the primary test identity
-    (tvaultconf's trilio-*-user) does NOT have access to it - Barbican
-    rejects with "Access denied to secret" - only this admin identity
-    does. This CONF.auth.admin_* group is otherwise unused here (only
-    meaningful when use_dynamic_credentials=True, which this suite has
-    off), so repurposing it for this is safe.
-    '''
-
-    def get_admin_scoped_token(self):
-        creds = auth.KeystoneV3Credentials(
-            username=CONF.auth.admin_username,
-            password=CONF.auth.admin_password,
-            project_name=CONF.auth.admin_project_name,
-            domain_name=CONF.auth.admin_domain_name,
-            user_domain_name=CONF.auth.admin_domain_name)
-        mgr = clients.Manager(creds)
-        return mgr.auth_provider.get_token()
 
     '''
     Method to get a valid, enabled/up compute node's hostname (matching
@@ -4993,16 +4968,37 @@ class BaseWorkloadmgrTest(tempest.test.BaseTestCase):
             return False
 
     '''
-    Generate OpenStack token
+    Generate OpenStack token. Pass admin=True to scope it to CONF.auth's
+    admin identity (admin_username/admin_password/admin_project_name/
+    admin_domain_name) instead of the primary test identity - needed for
+    e.g. an S3 trilio-dms-cli mount, which fetches its secret from
+    Barbican and requires a token scoped to whichever project actually
+    owns that secret. Confirmed live: the primary test identity does NOT
+    have Barbican access to it ("Access denied to secret") - only this
+    admin identity does. That CONF.auth.admin_* group is otherwise
+    unused here (only meaningful when use_dynamic_credentials=True,
+    which this suite has off), so repurposing it for this is safe.
     '''
-    def get_os_token(self):
+    def get_os_token(self, admin=False):
         try:
+            if admin:
+                username = CONF.auth.admin_username
+                user_domain_name = CONF.auth.admin_domain_name
+                password = CONF.auth.admin_password
+                project_name = CONF.auth.admin_project_name
+                project_domain_name = CONF.auth.admin_domain_name
+            else:
+                username = CONF.identity.username
+                user_domain_name = CONF.identity.domain_name
+                password = CONF.identity.password
+                project_name = CONF.identity.project_name
+                project_domain_name = CONF.identity.domain_name
             token_id, body = self.token_v3_client.get_token(
-                    username=CONF.identity.username,
-                    user_domain_name=CONF.identity.domain_name,
-                    password=CONF.identity.password,
-                    project_name=CONF.identity.project_name,
-                    project_domain_name=CONF.identity.domain_name,
+                    username=username,
+                    user_domain_name=user_domain_name,
+                    password=password,
+                    project_name=project_name,
+                    project_domain_name=project_domain_name,
                     auth_data=True)
             return token_id
         except Exception as e:

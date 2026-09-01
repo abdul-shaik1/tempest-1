@@ -67,7 +67,7 @@ class DMSFaultRecoveryTest(base.BaseWorkloadmgrTest):
             mount_path = target['filesystem_export_mount_path']
             LOG.debug(f"S3 target under test: {target_id} ({mount_path})")
 
-            token = self.get_admin_scoped_token()
+            token = self.get_os_token(admin=True)
             node_host = self.get_enabled_compute_node()
             LOG.debug(f"Using node: {node_host}")
 
